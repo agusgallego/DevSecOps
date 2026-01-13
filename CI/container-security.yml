@@ -1,0 +1,50 @@
+parameters:
+  - name: imageName
+    type: string
+  - name: dockerfilePath
+    type: string
+    default: 'Dockerfile'
+  - name: iacPath
+    type: string
+    default: '.' 
+  - name: breakBuild
+    type: boolean
+    default: false
+
+steps:
+  # HADOLINT: Análisis de Dockerfile
+  - script: |
+      DOCKER_PATH=$(find $(Pipeline.Workspace) -name "Dockerfile" -not -path "*/Templates/*" -print -quit)
+      
+      if [ -n "$DOCKER_PATH" ]; then
+        DOCKER_DIR=$(dirname "$DOCKER_PATH")
+        DOCKER_FILE=$(basename "$DOCKER_PATH")
+        
+        docker run --rm -v "$DOCKER_DIR":/data -w /data \
+          hadolint/hadolint hadolint --format sarif "$DOCKER_FILE" > $(System.DefaultWorkingDirectory)/hadolint.sarif
+      fi
+    displayName: 'Hadolint (Dockerfile Linter)'
+    continueOnError: true
+
+  # TRIVY IAC: Análisis de docker-compose.yml
+  - script: |
+      IAC_PATH=$(find $(Pipeline.Workspace) -name "docker-compose.yml" -not -path "*/Templates/*" -print -quit)
+      
+      if [ -n "$IAC_PATH" ]; then
+        IAC_DIR=$(dirname "$IAC_PATH")
+        docker run --rm -v "$IAC_DIR":/src aquasec/trivy:latest \
+          config --format sarif --output /src/trivy-iac.sarif /src/
+        mv "$IAC_DIR/trivy-iac.sarif" $(System.DefaultWorkingDirectory)/
+      fi
+    displayName: 'Trivy (IaC Security Scan)'
+    continueOnError: true
+
+  # PUBLICACIÓN UNIFICADA
+  - task: PublishBuildArtifacts@1
+    displayName: 'Publish Container & IaC SARIF'
+    condition: always()
+    inputs:
+      PathtoPublish: '$(System.DefaultWorkingDirectory)'
+      Contents: '*.sarif'
+      ArtifactName: 'CodeAnalysisLogs'
+      publishLocation: 'Container'

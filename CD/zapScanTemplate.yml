@@ -1,0 +1,107 @@
+parameters:
+  - name: appName
+    type: string
+  - name: targetUrl
+    type: string
+  - name: contextFilePath
+    type: string
+    default: 'security/context.xml'
+  - name: zapPort
+    type: number
+    default: 8081
+
+steps:
+  # 0. MANTENIMIENTO: Limpieza de procesos colgados para liberar RAM (CRÍTICO para Self-Hosted)
+  - powershell: |
+      Write-Host "--- LIMPIEZA DE PROCESOS ZOMBIE (Pre-Check) ---"
+      try {
+          Stop-Process -Name "chrome" -Force -ErrorAction SilentlyContinue
+          Stop-Process -Name "chromedriver" -Force -ErrorAction SilentlyContinue
+          # No matamos java por seguridad (podría ser el agente), pero limpiamos navegadores viejos.
+      } catch {
+          Write-Host "Nada que limpiar."
+      }
+      Write-Host "Memoria liberada y entorno limpio."
+    displayName: 'Mantenimiento: Liberar RAM'
+
+  # 1. Limpieza Docker: Verifica si existe antes de borrar para no fallar
+  - powershell: |
+      $containerName = "zap-container"
+      Write-Host "Verificando si existe contenedor previo: $containerName"
+      
+      # Buscamos el ID del contenedor (silenciosamente)
+      $exists = docker ps -a -q -f name=$containerName
+      
+      if ($exists) {
+          Write-Host "Contenedor encontrado. Deteniendo y eliminando..."
+          docker stop $containerName
+          docker rm $containerName
+          Write-Host "Limpieza completada."
+      } else {
+          Write-Host "No se encontró contenedor previo. Todo limpio."
+      }
+      
+      exit 0
+    displayName: 'Limpiar ZAP anterior'
+
+  # 2. Iniciar Docker con espera segura extendida
+  - powershell: |
+      Write-Host "Levantando ZAP en puerto ${{ parameters.zapPort }}..."
+      
+      docker run -d -u 0 `
+        -v "$(System.DefaultWorkingDirectory):/zap/security" `
+        -p ${{ parameters.zapPort }}:${{ parameters.zapPort }} `
+        --name zap-container `
+        zaproxy/zap-stable zap.sh -daemon `
+        -host 0.0.0.0 -port ${{ parameters.zapPort }} `
+        -config api.disablekey=true `
+        -config api.addrs.addr.name=.* `
+        -config api.addrs.addr.regex=true
+      
+      # AUMENTADO A 60s: Tu servidor tiene poca RAM libre, Java tarda en arrancar.
+      Write-Host "Contenedor iniciado. Esperando 60 segundos para carga completa..."
+      Start-Sleep -s 60
+    displayName: 'Iniciar Contenedor ZAP'
+
+  # 3. Instalar librerías Python
+  - script: |
+      python -m pip install --upgrade pip
+      python -m pip install -r "$(System.DefaultWorkingDirectory)/Templates/CD/scripts/requirements.txt"
+    displayName: 'Instalar Librerías Python'
+
+  # 4. Login con Selenium (Script Externo)
+  - script: |
+      python "$(System.DefaultWorkingDirectory)/Templates/CD/scripts/genericAuthEntra.py"
+    displayName: 'Login Selenium (Self-Hosted)'
+    env:
+      # Pasamos variables de entorno explícitas para Windows
+      ZAP_PROXY_ADDRESS: "localhost:${{ parameters.zapPort }}"
+      DAST_TARGET_URL: ${{ parameters.targetUrl }}
+      DAST_USER_EMAIL: $(DAST_USER_EMAIL) 
+      DAST_USER_PASS: $(DAST_USER_PASS)
+
+  # 5. Ejecutar Ataque (Spider + Active Scan)
+  - script: |
+      python "$(System.DefaultWorkingDirectory)/Templates/CD/scripts/lanzarAtaque.py"
+    displayName: 'Ejecutar Ataque: ${{ parameters.appName }}'
+    env:
+      CONTEXT_FILE_PATH: "${{ parameters.contextFilePath }}"
+      DAST_TARGET_URL: ${{ parameters.targetUrl }}
+      # Aseguramos que el script de ataque use el puerto parametrizado
+      ZAP_PROXY_ADDRESS: "localhost:${{ parameters.zapPort }}" 
+
+  # 6. Generar Reporte XML compatible con Azure DevOps
+  - script: |
+      python "$(System.DefaultWorkingDirectory)/Templates/CD/scripts/generarReporteDevops.py"
+    displayName: 'Generar XML'
+    env:
+       ZAP_PROXY_ADDRESS: "localhost:${{ parameters.zapPort }}" 
+
+  # 7. Publicar Resultados en el Dashboard
+  - task: PublishTestResults@2
+    displayName: 'Publicar en Azure DevOps'
+    condition: always()
+    inputs:
+      testResultsFormat: 'JUnit'
+      testResultsFiles: '**/TEST-ZAP-Report.xml'
+      testRunTitle: 'DAST - ${{ parameters.appName }}'

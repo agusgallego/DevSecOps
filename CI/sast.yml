@@ -1,0 +1,18 @@
+steps:
+  - task: SonarCloudPrepare@4
+    inputs:
+      SonarQube: '$(connection)'
+      organization: '$(organization)'
+      scannerMode: 'cli'
+      configMode: 'manual'
+      cliProjectKey: '$(cliProjectKey)'
+      cliProjectName: '$(cliProjectName)'
+      cliSources: '.'
+
+  - task: SonarCloudAnalyze@4
+    inputs:
+      jdkversion: 'JAVA_HOME_17_X64'
+
+  - task: SonarCloudPublish@4
+    inputs:
+      pollingTimeoutSec: '300'

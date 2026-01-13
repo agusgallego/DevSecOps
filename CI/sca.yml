@@ -1,0 +1,18 @@
+steps:
+  - script: |
+      echo "[INFO] Iniciando escaneo SCA con Trivy..."
+      
+      docker run --rm -v $(pwd):/src aquasec/trivy:latest fs /src \
+        --format sarif \
+        --output /src/trivy-report.sarif \
+        --severity HIGH,CRITICAL \
+        --exit-code 0
+    displayName: 'SCA Scan (Trivy)'
+
+  - task: PublishBuildArtifacts@1
+    displayName: 'Publish SCA SARIF'
+    condition: always()
+    inputs:
+      PathtoPublish: '$(System.DefaultWorkingDirectory)/trivy-report.sarif'
+      ArtifactName: 'CodeAnalysisLogs'
+      publishLocation: 'Container'
