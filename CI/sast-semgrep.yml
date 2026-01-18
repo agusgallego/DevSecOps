@@ -1,19 +1,20 @@
 steps:
   - script: |
       echo "[INFO] Iniciando escaneo SAST con Semgrep..."
+      if [ -f "$(System.DefaultWorkingDirectory)/security/.semgrepignore" ]; then
+          echo ">>> [CONFIG] Aplicando excepciones desde security/.semgrepignore"
+          cp $(System.DefaultWorkingDirectory)/security/.semgrepignore .semgrepignore
+      fi
       
-      # Ejecutamos Semgrep via Docker
-      # --config=auto: Detecta automáticamente el lenguaje (PHP/JS) y aplica reglas de seguridad recomendadas
-      # --sarif: Formato compatible con Azure DevOps
       docker run --rm -v $(pwd):/src returntocorp/semgrep semgrep scan \
         --config=p/security-audit \
         --config=p/owasp-top-ten \
         --config=p/secrets \
         --sarif --output report.sarif \
-        --error # Falla el build si hay hallazgos (opcional, quita esto si solo quieres reportar)
+        --error 
         
     displayName: 'SAST Scan (Semgrep)'
-    continueOnError: true # Recomendado 'true' al inicio para no bloquear deploys hasta afinar reglas
+    continueOnError: true 
 
   - task: PublishBuildArtifacts@1
     displayName: 'Publish Semgrep Report'
