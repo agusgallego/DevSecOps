@@ -32,10 +32,10 @@ Orquestación de ataques controlados en tiempo de ejecución.
 ---
 ##  variables de grupos SAST
 
-cliProjectKey > acacoop-backoffice.git |
-cliProjectName > app-backoffice.git |
-connection > SonarQube-Connection |
-organization > acacoop-1 |
+| cliProjectKey > acacoop-backoffice.git |
+| cliProjectName > app-backoffice.git |
+| connection > SonarQube-Connection |
+| organization > acacoop-1 |
 
 ---
 
