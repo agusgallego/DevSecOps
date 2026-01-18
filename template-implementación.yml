@@ -1,0 +1,94 @@
+trigger:
+  branches:
+    include:
+      - test
+pr:
+  branches:
+    include:
+      - test
+
+variables:
+  imageName: 'aca-app:$(Build.BuildId)'
+
+resources:
+  repositories:
+    - repository: templates
+      type: git
+      name: 'DevSecOps-Templates/Templates'
+      ref: 'refs/heads/main'
+      endpoint: 'DevSecOps-Templates-Connection'
+
+stages:
+  - stage: Security_Check
+    displayName: 'Security & Integrity Checks'
+    jobs:
+      - job: Secrets_Scan
+        displayName: 'GitLeaks Secrets'
+        pool:
+          vmImage: 'ubuntu-latest'
+        steps:
+          - checkout: self
+          - checkout: templates
+          - template: CI/secrets.yml@templates
+            parameters:
+              workingDirectory: '$(System.DefaultWorkingDirectory)'
+       
+      - job: Dependency_Scan
+        displayName: 'Trivy SCA (Filesystem)'
+        dependsOn: [] 
+        pool:
+          vmImage: 'ubuntu-latest'
+        steps:
+          - checkout: self
+          - checkout: templates
+          - template: CI/sca.yml@templates
+
+      - job: Static_Scan
+        displayName: 'Semgrep SAST'
+        dependsOn: [] 
+        pool:
+          vmImage: 'ubuntu-latest'
+        steps:
+          - checkout: self
+          - checkout: templates
+          - template: CI/sast-semgrep.yml@templates
+
+      - job: Container_Security_Job
+        displayName: 'Container Security'
+        dependsOn: [] 
+        pool:
+          vmImage: 'ubuntu-latest'
+        
+        steps:
+          - checkout: self
+            displayName: 'Descargar código fuente'
+
+          - task: Docker@2
+            displayName: 'Construir Imagen Local'
+            inputs:
+              command: 'build'
+              repository: 'aca-app' 
+              dockerfile: 'Dockerfile'
+              tags: '$(Build.BuildId)' 
+              arguments: '--no-cache' 
+
+          - template: CI/container-security.yml@templates
+            parameters:
+              imageName: '$(imageName)' 
+              breakBuild: false        
+
+          - task: CopyFiles@2
+            displayName: 'Recolectar Reportes SARIF'
+            condition: always()
+            inputs:
+              SourceFolder: '$(System.DefaultWorkingDirectory)'
+              Contents: '*.sarif'
+              TargetFolder: '$(Build.ArtifactStagingDirectory)/CodeAnalysisLogs'
+
+          - task: PublishBuildArtifacts@1
+            displayName: 'Publicar en Pestaña Scans'
+            condition: always()
+            inputs:
+              PathtoPublish: '$(Build.ArtifactStagingDirectory)/CodeAnalysisLogs'
+              ArtifactName: 'CodeAnalysisLogs'
+              publishLocation: 'Container'
