@@ -5,7 +5,7 @@ steps:
       docker run --rm -v $(pwd):/src aquasec/trivy:latest fs /src \
         --format sarif \
         --output /src/trivy-report.sarif \
-        --severity HIGH,CRITICAL \
+        --severity MEDIUM,HIGH,CRITICAL \
         --exit-code 0
     displayName: 'SCA Scan (Trivy)'
 
