@@ -7,78 +7,45 @@ parameters:
 
 steps:
   - script: |
-      echo ">>> [INFO] Buscando Dockerfile dinámicamente..."
+      echo ">>> [INFO] Localizando Dockerfile..."
       DF_PATH=$(find $(System.DefaultWorkingDirectory) -name "Dockerfile" -not -path "*/Templates/*" -print -quit)
-      
-      if [ -z "$DF_PATH" ]; then
-        echo "##vso[task.logissue type=error]CRÍTICO: No se encontró ningún Dockerfile."
-        exit 1
-      fi
-      
+      if [ -z "$DF_PATH" ]; then exit 1; fi
       DF_DIR=$(dirname "$DF_PATH")
-      echo "##vso[task.setvariable variable=autoDockerfilePath]$DF_PATH"
       echo "##vso[task.setvariable variable=autoBuildContext]$DF_DIR"
-    displayName: ' Auto-Detect Context'
-
-  - task: Docker@2
-    displayName: ' Build Local Image'
-    inputs:
-      command: build
-      repository: ${{ split(parameters.imageName, ':')[0] }}
-      tags: ${{ split(parameters.imageName, ':')[1] }}
-      Dockerfile: '$(autoDockerfilePath)'
-      buildContext: '$(autoBuildContext)'
+    displayName: 'Detectar Contexto'
 
   - script: |
-      echo "Analizando sintaxis..."
-      # Generamos el reporte directamente en el directorio de staging para no tener que moverlo luego
-      # || true evita que el pipeline falle si hay warnings
-      docker run --rm -v "$(autoBuildContext)":/data -w /data \
-        hadolint/hadolint hadolint --format sarif Dockerfile > $(System.DefaultWorkingDirectory)/hadolint.sarif || true
-    displayName: ' Hadolint (Dockerfile Lint)'
-    continueOnError: true
-
-  - script: |
-      echo "Escaneando IaC..."
-      docker run --rm -v "$(autoBuildContext)":/src aquasec/trivy:latest \
-        config --format sarif --output /src/trivy-iac.sarif /src/ || true
-      
-      if [ -f "$(autoBuildContext)/trivy-iac.sarif" ]; then
-          mv "$(autoBuildContext)/trivy-iac.sarif" $(System.DefaultWorkingDirectory)/trivy-iac.sarif
+      echo ">>> [INFO] Iniciando Hadolint..."
+      HADOLINT_ARGS=""
+      if [ -f "$(System.DefaultWorkingDirectory)/security/.hadolint.yaml" ]; then
+          echo ">>> [CONFIG] Usando configuración personalizada desde security/.hadolint.yaml"
+          cp $(System.DefaultWorkingDirectory)/security/.hadolint.yaml $(autoBuildContext)/.hadolint.yaml
+          HADOLINT_ARGS="--config .hadolint.yaml"
       fi
-    displayName: ' Trivy (IaC - Compose & Dockerfile)'
-    continueOnError: true
+
+      docker run --rm -v "$(autoBuildContext)":/data -w /data \
+        hadolint/hadolint hadolint --format sarif $HADOLINT_ARGS Dockerfile > $(System.DefaultWorkingDirectory)/hadolint.sarif || true
+    displayName: 'Hadolint Audit'
 
   - script: |
-      echo "Escaneando imagen..."
+      docker run --rm -v "$(System.DefaultWorkingDirectory)":/src aquasec/trivy:latest \
+        config --format sarif --output /src/trivy-iac.sarif /src/ || true
+    displayName: 'Trivy IaC Audit'
+
+  - script: |
+      EXIT_CODE=0
+      if [ "${{ parameters.breakBuild }}" == "True" ]; then EXIT_CODE=1; fi
+      TRIVY_ARGS=""
+      if [ -f "$(System.DefaultWorkingDirectory)/security/.trivyignore" ]; then
+          echo ">>> [CONFIG] Usando excepciones desde security/.trivyignore"
+          TRIVY_ARGS="--ignorefile /output/security/.trivyignore"
+      fi
+
       docker run --rm \
         -v /var/run/docker.sock:/var/run/docker.sock \
         -v $(System.DefaultWorkingDirectory):/output \
         aquasec/trivy:latest image \
-        --format sarif \
-        --output /output/trivy-image.sarif \
-        --severity HIGH,CRITICAL \
-        --scanners vuln,secret \
-        --ignore-unfixed \
-        ${{ parameters.imageName }} || true
-    displayName: ' Trivy (Image Vulns & Secrets)'
-    continueOnError: true 
-
-  - bash: |
-      echo ">>> Organizando reportes para publicación..."
-      mkdir -p $(Build.ArtifactStagingDirectory)/SecurityReports
-      
-      find $(System.DefaultWorkingDirectory) -maxdepth 1 -name "*.sarif" -exec mv {} $(Build.ArtifactStagingDirectory)/SecurityReports/ \;
-      
-      echo ">>> Contenido a publicar:"
-      ls -la $(Build.ArtifactStagingDirectory)/SecurityReports/
-    displayName: ' Prepare Artifacts'
-    condition: always()
-
-  - task: PublishBuildArtifacts@1
-    displayName: ' Publish Security Reports'
-    condition: always()
-    inputs:
-      PathtoPublish: '$(Build.ArtifactStagingDirectory)/SecurityReports'
-      ArtifactName: 'CodeAnalysisLogs'
-      publishLocation: 'Container'
+        --format sarif --output /output/trivy-image.sarif \
+        $TRIVY_ARGS \
+        --severity MEDIUM,HIGH,CRITICAL --exit-code $EXIT_CODE ${{ parameters.imageName }}
+    displayName: 'Trivy Image Audit'
