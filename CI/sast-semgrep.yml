@@ -1,0 +1,24 @@
+steps:
+  - script: |
+      echo "[INFO] Iniciando escaneo SAST con Semgrep..."
+      
+      # Ejecutamos Semgrep via Docker
+      # --config=auto: Detecta automáticamente el lenguaje (PHP/JS) y aplica reglas de seguridad recomendadas
+      # --sarif: Formato compatible con Azure DevOps
+      docker run --rm -v $(pwd):/src returntocorp/semgrep semgrep scan \
+        --config=p/security-audit \
+        --config=p/owasp-top-ten \
+        --config=p/secrets \
+        --sarif --output report.sarif \
+        --error # Falla el build si hay hallazgos (opcional, quita esto si solo quieres reportar)
+        
+    displayName: 'SAST Scan (Semgrep)'
+    continueOnError: true # Recomendado 'true' al inicio para no bloquear deploys hasta afinar reglas
+
+  - task: PublishBuildArtifacts@1
+    displayName: 'Publish Semgrep Report'
+    condition: always()
+    inputs:
+      PathtoPublish: '$(System.DefaultWorkingDirectory)/report.sarif'
+      ArtifactName: 'CodeAnalysisLogs'
+      publishLocation: 'Container'
