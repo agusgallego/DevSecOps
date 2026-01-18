@@ -1,10 +1,16 @@
 steps:
   - script: |
       echo "[INFO] Iniciando escaneo SCA con Trivy..."
+      TRIVY_ARGS=""
+      if [ -f "$(System.DefaultWorkingDirectory)/security/.trivyignore" ]; then
+          echo ">>> [CONFIG] Aplicando excepciones desde security/.trivyignore"
+          TRIVY_ARGS="--ignorefile /src/security/.trivyignore"
+      fi
       
       docker run --rm -v $(pwd):/src aquasec/trivy:latest fs /src \
         --format sarif \
         --output /src/trivy-report.sarif \
+        $TRIVY_ARGS \
         --severity MEDIUM,HIGH,CRITICAL \
         --exit-code 0
     displayName: 'SCA Scan (Trivy)'
