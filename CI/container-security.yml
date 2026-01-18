@@ -1,50 +1,84 @@
 parameters:
   - name: imageName
     type: string
-  - name: dockerfilePath
-    type: string
-    default: 'Dockerfile'
-  - name: iacPath
-    type: string
-    default: '.' 
   - name: breakBuild
     type: boolean
     default: false
 
 steps:
-  # HADOLINT: Análisis de Dockerfile
   - script: |
-      DOCKER_PATH=$(find $(Pipeline.Workspace) -name "Dockerfile" -not -path "*/Templates/*" -print -quit)
+      echo ">>> [INFO] Buscando Dockerfile dinámicamente..."
+      DF_PATH=$(find $(System.DefaultWorkingDirectory) -name "Dockerfile" -not -path "*/Templates/*" -print -quit)
       
-      if [ -n "$DOCKER_PATH" ]; then
-        DOCKER_DIR=$(dirname "$DOCKER_PATH")
-        DOCKER_FILE=$(basename "$DOCKER_PATH")
-        
-        docker run --rm -v "$DOCKER_DIR":/data -w /data \
-          hadolint/hadolint hadolint --format sarif "$DOCKER_FILE" > $(System.DefaultWorkingDirectory)/hadolint.sarif
+      if [ -z "$DF_PATH" ]; then
+        echo "##vso[task.logissue type=error]CRÍTICO: No se encontró ningún Dockerfile."
+        exit 1
       fi
-    displayName: 'Hadolint (Dockerfile Linter)'
+      
+      DF_DIR=$(dirname "$DF_PATH")
+      echo "##vso[task.setvariable variable=autoDockerfilePath]$DF_PATH"
+      echo "##vso[task.setvariable variable=autoBuildContext]$DF_DIR"
+    displayName: ' Auto-Detect Context'
+
+  - task: Docker@2
+    displayName: ' Build Local Image'
+    inputs:
+      command: build
+      repository: ${{ split(parameters.imageName, ':')[0] }}
+      tags: ${{ split(parameters.imageName, ':')[1] }}
+      Dockerfile: '$(autoDockerfilePath)'
+      buildContext: '$(autoBuildContext)'
+
+  - script: |
+      echo "Analizando sintaxis..."
+      # Generamos el reporte directamente en el directorio de staging para no tener que moverlo luego
+      # || true evita que el pipeline falle si hay warnings
+      docker run --rm -v "$(autoBuildContext)":/data -w /data \
+        hadolint/hadolint hadolint --format sarif Dockerfile > $(System.DefaultWorkingDirectory)/hadolint.sarif || true
+    displayName: ' Hadolint (Dockerfile Lint)'
     continueOnError: true
 
-  # TRIVY IAC: Análisis de docker-compose.yml
   - script: |
-      IAC_PATH=$(find $(Pipeline.Workspace) -name "docker-compose.yml" -not -path "*/Templates/*" -print -quit)
+      echo "Escaneando IaC..."
+      docker run --rm -v "$(autoBuildContext)":/src aquasec/trivy:latest \
+        config --format sarif --output /src/trivy-iac.sarif /src/ || true
       
-      if [ -n "$IAC_PATH" ]; then
-        IAC_DIR=$(dirname "$IAC_PATH")
-        docker run --rm -v "$IAC_DIR":/src aquasec/trivy:latest \
-          config --format sarif --output /src/trivy-iac.sarif /src/
-        mv "$IAC_DIR/trivy-iac.sarif" $(System.DefaultWorkingDirectory)/
+      if [ -f "$(autoBuildContext)/trivy-iac.sarif" ]; then
+          mv "$(autoBuildContext)/trivy-iac.sarif" $(System.DefaultWorkingDirectory)/trivy-iac.sarif
       fi
-    displayName: 'Trivy (IaC Security Scan)'
+    displayName: ' Trivy (IaC - Compose & Dockerfile)'
     continueOnError: true
 
-  # PUBLICACIÓN UNIFICADA
+  - script: |
+      echo "Escaneando imagen..."
+      docker run --rm \
+        -v /var/run/docker.sock:/var/run/docker.sock \
+        -v $(System.DefaultWorkingDirectory):/output \
+        aquasec/trivy:latest image \
+        --format sarif \
+        --output /output/trivy-image.sarif \
+        --severity HIGH,CRITICAL \
+        --scanners vuln,secret \
+        --ignore-unfixed \
+        ${{ parameters.imageName }} || true
+    displayName: ' Trivy (Image Vulns & Secrets)'
+    continueOnError: true 
+
+  - bash: |
+      echo ">>> Organizando reportes para publicación..."
+      mkdir -p $(Build.ArtifactStagingDirectory)/SecurityReports
+      
+      find $(System.DefaultWorkingDirectory) -maxdepth 1 -name "*.sarif" -exec mv {} $(Build.ArtifactStagingDirectory)/SecurityReports/ \;
+      
+      echo ">>> Contenido a publicar:"
+      ls -la $(Build.ArtifactStagingDirectory)/SecurityReports/
+    displayName: ' Prepare Artifacts'
+    condition: always()
+
   - task: PublishBuildArtifacts@1
-    displayName: 'Publish Container & IaC SARIF'
+    displayName: ' Publish Security Reports'
     condition: always()
     inputs:
-      PathtoPublish: '$(System.DefaultWorkingDirectory)'
-      Contents: '*.sarif'
+      PathtoPublish: '$(Build.ArtifactStagingDirectory)/SecurityReports'
       ArtifactName: 'CodeAnalysisLogs'
       publishLocation: 'Container'
