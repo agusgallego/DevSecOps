@@ -30,6 +30,14 @@ Orquestación de ataques controlados en tiempo de ejecución.
 | `zapScanTemplate.yml` | **Docker** | Levanta el contenedor `zaproxy/zap-stable`, gestiona limpieza de RAM y coordina la ejecución de los scripts anteriores. |
 
 ---
+##  variables de grupos SAST
+
+cliProjectKey > acacoop-backoffice.git
+cliProjectName > app-backoffice.git
+connection > SonarQube-Connection 
+organization > acacoop-1
+
+---
 
 ## 🛠️ Implementación
 
